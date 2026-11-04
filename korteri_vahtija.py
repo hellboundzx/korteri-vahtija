@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-Korteri vahtija (GitHub Actions versioon).
-Seaded tulevad GitHubi Secrets kaudu: NTFY_TOPIC, KV_URL, CITY24_URL.
-"""
 import json
 import os
 import re
@@ -23,21 +19,35 @@ LISTING_PATTERNS = {
     "city24.ee": r"/kinnisvara/|/real-estate/",
 }
 STATE_FILE = Path(__file__).with_name("nahtud.json")
-HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) KorteriVahtija/1.0"}
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "et-EE,et;q=0.9,en;q=0.8",
+}
 
 
-def load_seen():
+def load_state():
     if STATE_FILE.exists():
-        return set(json.loads(STATE_FILE.read_text()))
-    return set()
+        try:
+            data = json.loads(STATE_FILE.read_text())
+            if isinstance(data, dict):
+                return {k: set(v) for k, v in data.items()}
+        except Exception:
+            pass
+    return {}
 
 
-def save_seen(seen):
-    STATE_FILE.write_text(json.dumps(sorted(seen), indent=0))
+def save_state(state):
+    STATE_FILE.write_text(
+        json.dumps({k: sorted(v) for k, v in state.items()}, indent=0)
+    )
 
 
-def fetch_listings(site, url):
-    r = requests.get(url, headers=HEADERS, timeout=30)
+def fetch_listings(session, site, url):
+    r = session.get(url, headers=HEADERS, timeout=30)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     pattern = re.compile(LISTING_PATTERNS[site])
@@ -64,27 +74,32 @@ def notify(title, link):
 def main():
     if not NTFY_TOPIC:
         sys.exit("NTFY_TOPIC puudub")
-    first_run = not STATE_FILE.exists()
-    seen = load_seen()
-    new_count = 0
+    state = load_state()
+    session = requests.Session()
     for site, url in SEARCH_URLS.items():
         if not url:
             print(f"[{site}] link puudub, jätan vahele")
             continue
         try:
-            listings = fetch_listings(site, url)
+            listings = fetch_listings(session, site, url)
         except Exception as e:
             print(f"[{site}] viga: {e}", file=sys.stderr)
             continue
         print(f"[{site}] leitud {len(listings)} linki")
+        if not listings:
+            continue
+        first_run = site not in state
+        seen = state.get(site, set())
+        new = 0
         for link, title in listings.items():
             if link not in seen:
                 seen.add(link)
-                new_count += 1
+                new += 1
                 if not first_run:
                     notify(f"Uus korter ({site})", f"{title}\n{link}".strip())
-    save_seen(seen)
-    print("Esimene käivitus, teavitusi ei saadetud." if first_run else f"Uusi: {new_count}")
+        state[site] = seen
+        print(f"[{site}] " + ("esimene käivitus, salvestasin" if first_run else f"uusi: {new}"))
+    save_state(state)
 
 
 if __name__ == "__main__":
